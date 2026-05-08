@@ -1,0 +1,873 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simple Chrome VTT Dictation</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe4;
+        --panel: rgba(255, 252, 245, 0.92);
+        --text: #1b1d1f;
+        --muted: #5a5f66;
+        --accent: #0f766e;
+        --accent-strong: #115e59;
+        --border: rgba(27, 29, 31, 0.12);
+        --warn-bg: #fff1bf;
+        --warn-border: #d97706;
+        --shadow: 0 20px 60px rgba(72, 50, 15, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 30%),
+          radial-gradient(circle at top right, rgba(217, 119, 6, 0.16), transparent 32%),
+          linear-gradient(180deg, #f8f4ea 0%, var(--bg) 100%);
+      }
+
+      main {
+        width: min(960px, calc(100% - 32px));
+        margin: 32px auto;
+        padding: 28px;
+        border: 1px solid var(--border);
+        border-radius: 24px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: clamp(2rem, 5vw, 3.2rem);
+        line-height: 0.95;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 24px 0 18px;
+      }
+
+      button,
+      select {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        background: #fff;
+        color: var(--text);
+      }
+
+      button {
+        cursor: pointer;
+        transition: transform 120ms ease, background 120ms ease;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: transparent;
+      }
+
+      .primary.active {
+        background: var(--accent-strong);
+      }
+
+      .status-bar,
+      .confidence-bar,
+      .transcript,
+      .notes {
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      .status-bar,
+      .confidence-bar,
+      .notes {
+        padding: 14px 16px;
+        margin-bottom: 14px;
+      }
+
+      .transcript {
+        min-height: 280px;
+        padding: 20px;
+        position: relative;
+      }
+
+      .editor-shell {
+        position: relative;
+        min-height: 240px;
+      }
+
+      .final-text,
+      .caret-layer {
+        font-size: 1.1rem;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: "Consolas", "Menlo", "Monaco", monospace;
+      }
+
+      .final-text,
+      .caret-layer {
+        color: var(--text);
+      }
+
+      .interim-text {
+        color: var(--muted);
+        opacity: 0.82;
+      }
+
+      #interimText {
+        display: none;
+      }
+
+      .caret-layer {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      .final-text {
+        position: relative;
+        z-index: 1;
+      }
+
+      .caret-layer {
+        z-index: 2;
+        color: transparent;
+      }
+
+      .caret {
+        display: inline-block;
+        width: 0.68ch;
+        height: 1.15em;
+        vertical-align: text-bottom;
+        border-radius: 2px;
+        background: rgba(15, 118, 110, 0.92);
+        box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.12);
+        animation: blink 1s steps(1) infinite;
+      }
+
+      .caret.listening {
+        background: rgba(217, 119, 6, 0.95);
+        box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.14);
+      }
+
+      @keyframes blink {
+        0%,
+        49% {
+          opacity: 1;
+        }
+
+        50%,
+        100% {
+          opacity: 0.18;
+        }
+      }
+
+      .segment-uncertain {
+        background: var(--warn-bg);
+        border-bottom: 2px solid var(--warn-border);
+        border-radius: 6px;
+        padding: 0 2px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(15, 118, 110, 0.09);
+        color: var(--accent-strong);
+        font-size: 0.95rem;
+      }
+
+      .notes ul {
+        margin: 10px 0 0;
+        padding-left: 18px;
+      }
+
+      .notes li {
+        margin-top: 8px;
+      }
+
+      .uncertain-item {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .uncertain-item button {
+        padding: 8px 12px;
+      }
+
+      .editor {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        width: 100%;
+        margin-top: 6px;
+      }
+
+      .editor input {
+        flex: 1 1 260px;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font: inherit;
+      }
+
+      .notes li + li {
+        margin-top: 8px;
+      }
+
+      .meta {
+        margin-top: 18px;
+        display: grid;
+        gap: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Chrome Dictation Pad</h1>
+      <p>
+        Uses the browser speech recognition API in Chrome. Spoken formatting commands
+        are converted into cleaner text for pasting into an LLM.
+      </p>
+
+      <div class="controls">
+        <button id="toggleBtn" class="primary">Start dictation</button>
+        <button id="copyBtn">Copy text</button>
+        <button id="clearBtn">Clear</button>
+        <select id="languageSelect" aria-label="Language">
+          <option value="en-US">English (US)</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="es-US">Spanish (US)</option>
+          <option value="fr-FR">French</option>
+          <option value="de-DE">German</option>
+        </select>
+      </div>
+
+      <div class="status-bar">
+        <span id="status" class="pill">Idle</span>
+      </div>
+
+      <div class="transcript">
+        <div class="editor-shell">
+          <div id="finalText" class="final-text"></div>
+          <div id="interimText" class="interim-text"></div>
+          <div id="caretLayer" class="caret-layer"></div>
+        </div>
+      </div>
+
+      <div class="meta">
+        <div class="confidence-bar">
+          <strong>Confidence</strong>
+          <p id="confidenceSummary">
+            Chrome often exposes confidence only for each finalized phrase, not each
+            individual word.
+          </p>
+        </div>
+
+        <div class="notes">
+          <strong>Uncertain segments</strong>
+          <ul id="uncertainList">
+            <li>No uncertain segments yet.</li>
+          </ul>
+        </div>
+
+        <div class="notes">
+          <strong>Supported voice commands</strong>
+          <ul>
+            <li><code>new line</code>, <code>new paragraph</code>, <code>new bullet</code></li>
+            <li><code>period</code>, <code>comma</code>, <code>question mark</code>, <code>dash</code></li>
+            <li><code>open quote</code>, <code>close quote</code>, <code>open parenthesis</code>, <code>close parenthesis</code></li>
+            <li><code>delete last sentence</code>, <code>delete last paragraph</code>, <code>scratch that</code></li>
+            <li><code>speaker note</code>, <code>instruction</code>, <code>context</code>, <code>example</code>, <code>important</code></li>
+            <li><code>new section</code>, <code>code block</code>, <code>end code block</code></li>
+          </ul>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      const toggleBtn = document.getElementById("toggleBtn");
+      const copyBtn = document.getElementById("copyBtn");
+      const clearBtn = document.getElementById("clearBtn");
+      const languageSelect = document.getElementById("languageSelect");
+      const statusEl = document.getElementById("status");
+      const finalTextEl = document.getElementById("finalText");
+      const interimTextEl = document.getElementById("interimText");
+      const caretLayerEl = document.getElementById("caretLayer");
+      const confidenceSummaryEl = document.getElementById("confidenceSummary");
+      const uncertainListEl = document.getElementById("uncertainList");
+
+      const UNCERTAIN_THRESHOLD = 0.82;
+
+      let recognition = null;
+      let isListening = false;
+      let finalSegments = [];
+      let editingSegmentId = null;
+      let nextSegmentId = 1;
+      let typingTimer = null;
+      let displayedInterimText = "";
+
+      function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      function setStatus(text, active = false) {
+        statusEl.textContent = text;
+        toggleBtn.classList.toggle("active", active);
+        toggleBtn.textContent = active ? "Stop dictation" : "Start dictation";
+      }
+
+      function normalizeSpacing(text) {
+        return text
+          .replace(/[ \t]+\n/g, "\n")
+          .replace(/\n[ \t]+/g, "\n")
+          .replace(/[ \t]{2,}/g, " ")
+          .replace(/[ \t]+$/g, "");
+      }
+
+      function deleteLastSentence(text) {
+        const trimmed = text.trimEnd();
+        if (!trimmed) {
+          return "";
+        }
+
+        const withoutTrailingSentence = trimmed.replace(
+          /(^|[\n\s])[^.!?\n]*[.!?]?\s*$/s,
+          (match, prefix) => prefix || ""
+        );
+
+        if (withoutTrailingSentence === trimmed) {
+          return "";
+        }
+
+        return normalizeSpacing(withoutTrailingSentence);
+      }
+
+      function deleteLastParagraph(text) {
+        const trimmed = text.trimEnd();
+        if (!trimmed) {
+          return "";
+        }
+
+        const index = trimmed.lastIndexOf("\n\n");
+        if (index === -1) {
+          return "";
+        }
+
+        return normalizeSpacing(trimmed.slice(0, index));
+      }
+
+      function renderTranscript() {
+        renderFinalText();
+        renderConfidenceSummary();
+        renderUncertainList();
+        renderCaret();
+      }
+
+      function renderInterimText() {
+        const interimHtml = displayedInterimText
+          ? `<span class="interim-text">${escapeHtml(displayedInterimText)}</span>`
+          : "";
+        return interimHtml;
+      }
+
+      function renderCaret() {
+        const liveText = `${finalSegments.map((segment) => segment.text).join("")}${displayedInterimText}`;
+        const safeText = escapeHtml(liveText);
+        const caretClass = isListening ? "caret listening" : "caret";
+        caretLayerEl.innerHTML = `<span aria-hidden="true">${safeText}</span><span class="${caretClass}"></span>`;
+      }
+
+      function clearTypingTimer() {
+        if (typingTimer) {
+          window.clearTimeout(typingTimer);
+          typingTimer = null;
+        }
+      }
+
+      function animateInterimText(targetText) {
+        clearTypingTimer();
+
+        const normalizedTarget = targetText ? applyVoiceCommands(targetText) : "";
+        if (!normalizedTarget) {
+          displayedInterimText = "";
+          interimTextEl.textContent = "";
+          renderFinalText();
+          renderCaret();
+          return;
+        }
+
+        const startFrom = normalizedTarget.startsWith(displayedInterimText)
+          ? displayedInterimText.length
+          : 0;
+
+        if (startFrom === 0) {
+          displayedInterimText = "";
+          interimTextEl.textContent = "";
+          renderFinalText();
+        }
+
+        function step(index) {
+          displayedInterimText = normalizedTarget.slice(0, index);
+          interimTextEl.textContent = displayedInterimText;
+          renderFinalText();
+          renderCaret();
+
+          if (index >= normalizedTarget.length) {
+            typingTimer = null;
+            return;
+          }
+
+          typingTimer = window.setTimeout(() => step(index + 1), 18);
+        }
+
+        step(Math.max(startFrom, 1));
+      }
+
+      function applyEditorCommand(rawText) {
+        const command = rawText.trim().toLowerCase();
+
+        if (command === "delete last sentence" || command === "scratch that") {
+          const combined = finalSegments.map((segment) => segment.text).join("");
+          const updated = deleteLastSentence(combined);
+          finalSegments = updated
+            ? [{
+                id: nextSegmentId,
+                rawText: updated,
+                text: `${updated} `,
+                confidence: null,
+                isUncertain: false,
+              }]
+            : [];
+          nextSegmentId += 1;
+          editingSegmentId = null;
+          renderTranscript();
+          setStatus("Deleted last sentence");
+          return true;
+        }
+
+        if (command === "delete last paragraph") {
+          const combined = finalSegments.map((segment) => segment.text).join("");
+          const updated = deleteLastParagraph(combined);
+          finalSegments = updated
+            ? [{
+                id: nextSegmentId,
+                rawText: updated,
+                text: `${updated} `,
+                confidence: null,
+                isUncertain: false,
+              }]
+            : [];
+          nextSegmentId += 1;
+          editingSegmentId = null;
+          renderTranscript();
+          setStatus("Deleted last paragraph");
+          return true;
+        }
+
+        return false;
+      }
+
+      function applyVoiceCommands(text) {
+        let output = text;
+
+        const replacements = [
+          { pattern: /\bspeaker note\b/gi, replacement: "[note:" },
+          { pattern: /\bend note\b/gi, replacement: "]" },
+          { pattern: /\binstruction\b/gi, replacement: "\nInstruction: " },
+          { pattern: /\bcontext\b/gi, replacement: "\nContext: " },
+          { pattern: /\bexample\b/gi, replacement: "\nExample: " },
+          { pattern: /\bimportant\b/gi, replacement: "\nImportant: " },
+          { pattern: /\bnew section\b/gi, replacement: "\n\n## " },
+          { pattern: /\bcode block\b/gi, replacement: "\n```\n" },
+          { pattern: /\bend code block\b/gi, replacement: "\n```\n" },
+          { pattern: /\bnew paragraph\b/gi, replacement: "\n\n" },
+          { pattern: /\bnew bullet\b/gi, replacement: "\n- " },
+          { pattern: /\bnew line\b/gi, replacement: "\n" },
+          { pattern: /\bline break\b/gi, replacement: "\n" },
+          { pattern: /\bperiod\b/gi, replacement: "." },
+          { pattern: /\bfull stop\b/gi, replacement: "." },
+          { pattern: /\bcomma\b/gi, replacement: "," },
+          { pattern: /\bquestion mark\b/gi, replacement: "?" },
+          { pattern: /\bexclamation point\b/gi, replacement: "!" },
+          { pattern: /\bexclamation mark\b/gi, replacement: "!" },
+          { pattern: /\bcolon\b/gi, replacement: ":" },
+          { pattern: /\bsemicolon\b/gi, replacement: ";" },
+          { pattern: /\bopen quote\b/gi, replacement: '"' },
+          { pattern: /\bclose quote\b/gi, replacement: '"' },
+          { pattern: /\bquote\b/gi, replacement: '"' },
+          { pattern: /\bopen parenthesis\b/gi, replacement: "(" },
+          { pattern: /\bclose parenthesis\b/gi, replacement: ")" },
+          { pattern: /\bopen bracket\b/gi, replacement: "[" },
+          { pattern: /\bclose bracket\b/gi, replacement: "]" },
+          { pattern: /\bopen brace\b/gi, replacement: "{" },
+          { pattern: /\bclose brace\b/gi, replacement: "}" },
+          { pattern: /\bem dash\b/gi, replacement: " -- " },
+          { pattern: /\bdash\b/gi, replacement: " - " },
+          { pattern: /\barrow\b/gi, replacement: " -> " },
+          { pattern: /\bellipsis\b/gi, replacement: "..." },
+        ];
+
+        for (const { pattern, replacement } of replacements) {
+          output = output.replace(pattern, replacement);
+        }
+
+        output = output
+          .replace(/\s+([,.;:!?\)\]\}])/g, "$1")
+          .replace(/([\(\[\{])\s+/g, "$1")
+          .replace(/([,.;:!?])(?=\S)/g, "$1 ")
+          .replace(/(["])(?=\S)/g, "$1 ")
+          .replace(/(\S)(["])/g, "$1 $2")
+          .replace(/\n(Instruction|Context|Example|Important):/g, "\n\n$1:")
+          .replace(/\n```\n{2,}/g, "\n```\n")
+          .replace(/\s+\n/g, "\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .replace(/(^|\n)-(?=\S)/g, "$1- ");
+
+        return normalizeSpacing(output);
+      }
+
+      function renderFinalText() {
+        const finalHtml = finalSegments
+          .map((segment) => {
+            const text = escapeHtml(segment.text);
+            if (segment.isUncertain) {
+              const confidenceLabel =
+                typeof segment.confidence === "number" && segment.confidence > 0
+                  ? `Low confidence: ${Math.round(segment.confidence * 100)}%`
+                  : "Marked uncertain";
+              return `<span class="segment-uncertain" title="${confidenceLabel}">${text}</span>`;
+            }
+            return text;
+          })
+          .join("");
+
+        finalTextEl.innerHTML = `${finalHtml}${renderInterimText()}`;
+      }
+
+      function renderUncertainList() {
+        const uncertain = finalSegments.filter((segment) => segment.isUncertain);
+        if (!uncertain.length) {
+          uncertainListEl.innerHTML = "<li>No uncertain segments yet.</li>";
+          return;
+        }
+
+        uncertainListEl.innerHTML = uncertain
+          .map((segment) => {
+            const confidenceText =
+              typeof segment.confidence === "number" && segment.confidence > 0
+                ? ` (${Math.round(segment.confidence * 100)}% confidence)`
+                : "";
+            const isEditing = editingSegmentId === segment.id;
+            return `
+              <li>
+                <div class="uncertain-item">
+                  <strong>${escapeHtml(segment.rawText)}</strong>${escapeHtml(confidenceText)}
+                  <button type="button" data-action="edit" data-segment-id="${segment.id}">Edit</button>
+                  <button type="button" data-action="keep" data-segment-id="${segment.id}">Keep as is</button>
+                  ${isEditing ? `
+                    <div class="editor">
+                      <input
+                        type="text"
+                        value="${escapeHtml(segment.rawText)}"
+                        data-editor-input="${segment.id}"
+                        aria-label="Correction for uncertain segment"
+                      />
+                      <button type="button" data-action="save" data-segment-id="${segment.id}">Apply</button>
+                      <button type="button" data-action="cancel" data-segment-id="${segment.id}">Cancel</button>
+                    </div>
+                  ` : ""}
+                </div>
+              </li>
+            `;
+          })
+          .join("");
+      }
+
+      function renderConfidenceSummary() {
+        const withConfidence = finalSegments.filter(
+          (segment) =>
+            typeof segment.confidence === "number" && segment.confidence > 0
+        );
+
+        if (!withConfidence.length) {
+          confidenceSummaryEl.textContent =
+            "Chrome is not exposing usable phrase confidence values yet, so only plain transcription is available.";
+          return;
+        }
+
+        const avg =
+          withConfidence.reduce((sum, segment) => sum + segment.confidence, 0) /
+          withConfidence.length;
+        const uncertainCount = withConfidence.filter(
+          (segment) => segment.confidence < UNCERTAIN_THRESHOLD
+        ).length;
+
+        confidenceSummaryEl.textContent =
+          `Average finalized phrase confidence: ${Math.round(avg * 100)}%. ` +
+          `${uncertainCount} phrase${uncertainCount === 1 ? "" : "s"} flagged below ${Math.round(UNCERTAIN_THRESHOLD * 100)}%. Chrome does not provide reliable word-by-word confidence here.`;
+      }
+
+      function resetTranscript() {
+        clearTypingTimer();
+        finalSegments = [];
+        editingSegmentId = null;
+        displayedInterimText = "";
+        finalTextEl.textContent = "";
+        interimTextEl.textContent = "";
+        renderConfidenceSummary();
+        renderUncertainList();
+        renderCaret();
+      }
+
+      function updateSegmentText(segment, newRawText) {
+        const cleanedRawText = newRawText.trim();
+        if (!cleanedRawText) {
+          return false;
+        }
+
+        segment.rawText = cleanedRawText;
+        segment.text = `${applyVoiceCommands(cleanedRawText)} `;
+        segment.isUncertain = false;
+        editingSegmentId = null;
+        renderTranscript();
+        setStatus("Correction applied");
+        return true;
+      }
+
+      function stopRecognition() {
+        if (!recognition || !isListening) {
+          return;
+        }
+        recognition.stop();
+      }
+
+      function startRecognition() {
+        if (!recognition) {
+          return;
+        }
+
+        recognition.lang = languageSelect.value;
+        recognition.start();
+      }
+
+      function setupRecognition() {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 3;
+
+        recognition.onstart = () => {
+          isListening = true;
+          setStatus("Listening", true);
+          renderCaret();
+        };
+
+        recognition.onend = () => {
+          clearTypingTimer();
+          isListening = false;
+          displayedInterimText = "";
+          interimTextEl.textContent = "";
+          setStatus("Idle");
+          renderCaret();
+        };
+
+        recognition.onerror = (event) => {
+          const errorText = event.error === "not-allowed"
+            ? "Microphone permission denied"
+            : `Recognition error: ${event.error}`;
+          setStatus(errorText);
+        };
+
+        recognition.onresult = (event) => {
+          let interimText = "";
+
+          for (let i = event.resultIndex; i < event.results.length; i += 1) {
+            const result = event.results[i];
+            const bestAlternative = result[0];
+            const text = bestAlternative.transcript.trim();
+            const confidence = bestAlternative.confidence;
+
+            if (result.isFinal) {
+              if (applyEditorCommand(text)) {
+                displayedInterimText = "";
+                interimTextEl.textContent = "";
+                continue;
+              }
+
+              finalSegments.push({
+                id: nextSegmentId,
+                rawText: text,
+                text: `${applyVoiceCommands(text)} `,
+                confidence,
+                isUncertain:
+                  typeof confidence === "number" &&
+                  confidence > 0 &&
+                  confidence < UNCERTAIN_THRESHOLD,
+              });
+              nextSegmentId += 1;
+            } else {
+              interimText += `${text} `;
+            }
+          }
+
+          animateInterimText(interimText.trim());
+          renderTranscript();
+        };
+      }
+
+      toggleBtn.addEventListener("click", () => {
+        if (!SpeechRecognition) {
+          setStatus("Speech recognition is not supported in this browser");
+          return;
+        }
+
+        if (!recognition) {
+          setupRecognition();
+        }
+
+        if (isListening) {
+          stopRecognition();
+          return;
+        }
+
+        startRecognition();
+      });
+
+      copyBtn.addEventListener("click", async () => {
+        const text = finalSegments.map((segment) => segment.text).join("").trim();
+        if (!text) {
+          setStatus("Nothing to copy");
+          return;
+        }
+
+        try {
+          await navigator.clipboard.writeText(text);
+          setStatus("Copied to clipboard");
+        } catch (error) {
+          setStatus("Clipboard copy failed");
+        }
+      });
+
+      clearBtn.addEventListener("click", () => {
+        stopRecognition();
+        resetTranscript();
+        setStatus("Cleared");
+      });
+
+      uncertainListEl.addEventListener("click", (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) {
+          return;
+        }
+
+        const segmentId = Number(button.dataset.segmentId);
+        const segment = finalSegments.find((item) => item.id === segmentId);
+        if (!segment) {
+          return;
+        }
+
+        const action = button.dataset.action;
+        if (action === "edit") {
+          editingSegmentId = segmentId;
+          renderUncertainList();
+          const input = uncertainListEl.querySelector(
+            `[data-editor-input="${segmentId}"]`
+          );
+          if (input) {
+            input.focus();
+            input.select();
+          }
+          return;
+        }
+
+        if (action === "cancel") {
+          editingSegmentId = null;
+          renderUncertainList();
+          return;
+        }
+
+        if (action === "keep") {
+          segment.isUncertain = false;
+          editingSegmentId = null;
+          renderTranscript();
+          setStatus("Marked as reviewed");
+          return;
+        }
+
+        if (action === "save") {
+          const input = uncertainListEl.querySelector(
+            `[data-editor-input="${segmentId}"]`
+          );
+          if (input) {
+            updateSegmentText(segment, input.value);
+          }
+        }
+      });
+
+      uncertainListEl.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+
+        const input = event.target.closest("input[data-editor-input]");
+        if (!input) {
+          return;
+        }
+
+        const segmentId = Number(input.dataset.editorInput);
+        const segment = finalSegments.find((item) => item.id === segmentId);
+        if (!segment) {
+          return;
+        }
+
+        event.preventDefault();
+        updateSegmentText(segment, input.value);
+      });
+
+      renderConfidenceSummary();
+      renderUncertainList();
+      renderCaret();
+    </script>
+  </body>
+</html>
