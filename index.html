@@ -156,6 +156,18 @@
       .final-text {
         position: relative;
         z-index: 1;
+        min-height: 240px;
+        outline: none;
+        cursor: text;
+      }
+
+      .transcript:focus-within {
+        border-color: rgba(15, 118, 110, 0.45);
+        box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+      }
+
+      .final-text:focus ~ .caret-layer .caret:not(.listening) {
+        display: none;
       }
 
       .caret-layer {
@@ -262,7 +274,8 @@
       <h1>Chrome Dictation Pad</h1>
       <p>
         Uses the browser speech recognition API in Chrome. Spoken formatting commands
-        are converted into cleaner text for pasting into an LLM.
+        are converted into cleaner text for pasting into an LLM. Click anywhere in the
+        transcript to fix words by typing.
       </p>
 
       <div class="controls">
@@ -284,7 +297,13 @@
 
       <div class="transcript">
         <div class="editor-shell">
-          <div id="finalText" class="final-text"></div>
+          <div
+            id="finalText"
+            class="final-text"
+            contenteditable="plaintext-only"
+            spellcheck="true"
+            aria-label="Transcript (click to edit)"
+          ></div>
           <div id="interimText" class="interim-text"></div>
           <div id="caretLayer" class="caret-layer"></div>
         </div>
@@ -406,9 +425,120 @@
 
       function renderInterimText() {
         const interimHtml = displayedInterimText
-          ? `<span class="interim-text">${escapeHtml(displayedInterimText)}</span>`
+          ? `<span class="interim-text" contenteditable="false">${escapeHtml(displayedInterimText)}</span>`
           : "";
         return interimHtml;
+      }
+
+      function editorTextNodes() {
+        const nodes = [];
+        const walker = document.createTreeWalker(finalTextEl, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (!node.parentElement.closest(".interim-text")) {
+            nodes.push(node);
+          }
+        }
+        return nodes;
+      }
+
+      // Character offset of a DOM position within the editable transcript.
+      function editorOffsetOf(node, offset) {
+        const range = document.createRange();
+        range.setStart(finalTextEl, 0);
+        range.setEnd(node, offset);
+        return range.toString().length;
+      }
+
+      function editorPositionAt(target) {
+        let remaining = target;
+        let last = null;
+        for (const node of editorTextNodes()) {
+          if (remaining <= node.length) {
+            return [node, remaining];
+          }
+          remaining -= node.length;
+          last = node;
+        }
+        return last ? [last, last.length] : [finalTextEl, 0];
+      }
+
+      function captureEditorSelection() {
+        const selection = window.getSelection();
+        if (
+          document.activeElement !== finalTextEl ||
+          !selection.rangeCount ||
+          !finalTextEl.contains(selection.anchorNode) ||
+          !finalTextEl.contains(selection.focusNode)
+        ) {
+          return null;
+        }
+        return {
+          anchor: editorOffsetOf(selection.anchorNode, selection.anchorOffset),
+          focus: editorOffsetOf(selection.focusNode, selection.focusOffset),
+        };
+      }
+
+      function restoreEditorSelection(saved) {
+        if (!saved) {
+          return;
+        }
+        const [anchorNode, anchorOffset] = editorPositionAt(saved.anchor);
+        const [focusNode, focusOffset] = editorPositionAt(saved.focus);
+        window.getSelection().setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+      }
+
+      // Pull the user's inline edits back into finalSegments.
+      function syncSegmentsFromEditor() {
+        const texts = new Map();
+        let firstId = null;
+        let lastId = null;
+        let leadingText = "";
+
+        for (const node of editorTextNodes()) {
+          const owner = node.parentElement.closest("[data-segment-id]");
+          const id = owner ? Number(owner.dataset.segmentId) : lastId;
+          if (id === null) {
+            leadingText += node.data;
+            continue;
+          }
+          if (firstId === null) {
+            firstId = id;
+          }
+          texts.set(id, (texts.get(id) || "") + node.data);
+          lastId = id;
+        }
+
+        if (leadingText) {
+          if (firstId === null) {
+            finalSegments = [{
+              id: nextSegmentId,
+              rawText: leadingText.trim(),
+              text: leadingText,
+              confidence: null,
+              isUncertain: false,
+            }];
+            nextSegmentId += 1;
+            return;
+          }
+          texts.set(firstId, leadingText + texts.get(firstId));
+        }
+
+        finalSegments = finalSegments.filter((segment) => {
+          const text = texts.get(segment.id) || "";
+          if (text !== segment.text) {
+            segment.text = text;
+            segment.rawText = text.trim();
+            if (segment.isUncertain) {
+              segment.isUncertain = false;
+              const span = finalTextEl.querySelector(`[data-segment-id="${segment.id}"]`);
+              if (span) {
+                span.classList.remove("segment-uncertain");
+                span.removeAttribute("title");
+              }
+            }
+          }
+          return text.length > 0;
+        });
       }
 
       function renderCaret() {
@@ -576,13 +706,15 @@
                 typeof segment.confidence === "number" && segment.confidence > 0
                   ? `Low confidence: ${Math.round(segment.confidence * 100)}%`
                   : "Marked uncertain";
-              return `<span class="segment-uncertain" title="${confidenceLabel}">${text}</span>`;
+              return `<span class="segment-uncertain" data-segment-id="${segment.id}" title="${confidenceLabel}">${text}</span>`;
             }
-            return text;
+            return `<span data-segment-id="${segment.id}">${text}</span>`;
           })
           .join("");
 
+        const savedSelection = captureEditorSelection();
         finalTextEl.innerHTML = `${finalHtml}${renderInterimText()}`;
+        restoreEditorSelection(savedSelection);
       }
 
       function renderUncertainList() {
@@ -843,6 +975,43 @@
             updateSegmentText(segment, input.value);
           }
         }
+      });
+
+      // Insert raw text at the caret. Native Enter/paste in contenteditable
+      // splits spans into <div>s, which would break the segment mapping.
+      function insertPlainTextAtCaret(text) {
+        const selection = window.getSelection();
+        if (!selection.rangeCount) {
+          return;
+        }
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+        const node = document.createTextNode(text);
+        range.insertNode(node);
+        range.setStartAfter(node);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        finalTextEl.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+
+      finalTextEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          insertPlainTextAtCaret("\n");
+        }
+      });
+
+      finalTextEl.addEventListener("paste", (event) => {
+        event.preventDefault();
+        insertPlainTextAtCaret(event.clipboardData.getData("text/plain"));
+      });
+
+      finalTextEl.addEventListener("input", () => {
+        syncSegmentsFromEditor();
+        renderConfidenceSummary();
+        renderUncertainList();
+        renderCaret();
       });
 
       uncertainListEl.addEventListener("keydown", (event) => {

@@ -42,6 +42,7 @@ npx live-server
 - Phrase-level confidence display when Chrome exposes confidence values
 - Low-confidence phrase highlighting
 - Manual correction tools for uncertain phrases
+- Click-to-edit transcript: click anywhere in the text and type to fix it inline (editing a flagged phrase marks it reviewed)
 - LLM-friendly formatting helpers for structured prompting
 
 ## Supported Voice Commands
